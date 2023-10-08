@@ -71,7 +71,7 @@ class Leader:  # 需要follow的列表，tensorboard写入器，
         self.followers = follower_list
         self.writer = writer
         self.station_num = station_num
-        self.state = torch.randn(1, len(self.followers) * self.followers[0].action.shape[0])   # leader的状态是所有follower的action维度之和，这里默认
+        self.state = torch.randn(1, len(self.followers) * self.followers[0].action.shape[0])  # leader的状态是所有follower的action维度之和，这里默认
         # 所有的follower的动作维度一样，并且假设follower list里面至少有一个follower
         self.action = torch.randn(self.station_num)  # leader的action就是电价值，我们这里假设他是一个向量，不同的维度表示不同充电站的电价，也就是说不同的充电站可以有不同的电价
         self.agent = SAC(self.state.shape[1], self.action, args)

@@ -46,17 +46,17 @@ class suppress_stdout_stderr(object):
         os.close(self.null_fds[0])
         os.close(self.null_fds[1])
 
-
+#  电网环境
 class globalenv:
-    ppopt = ppoption(PF_ALG=1, OUT_GEN=1)
+    ppopt = ppoption(PF_ALG=1, OUT_GEN=1)  # 设置一些求解的方法和输出，PF_alg表示使用牛顿法求解，OUT_GEN=1表示输出发电机的结果
     def __init__(self, client_num):
-        self.case = case15da()
-        self.client_num = client_num
-        self.client_action = []
+        self.case = case15da()   # 加载case15这个例子
+        self.client_num = client_num  # 电网中车的个数
+        self.client_action = []  # 所有的车的action list
         for i in range(self.client_num):
             self.client_action.append([0, 0])
-        self.sumP = self.substationP(self.case)
-    # 计算线路损失
+        self.sumP = self.substationP(self.case)  # 计算初始的发电机功率
+    # 计算线路损失，返回实部的损失和虚部的损失，因为是AC
     def calloss(self, baseMVA, bus=None, gen=None, branch=None, f=None, success=None, t=None, fd=None, ppopt=None):
         if isinstance(baseMVA, dict):
             have_results_struct = 1
@@ -178,7 +178,7 @@ class globalenv:
         # with suppress_stdout_stderr():
         result = runopf(data, self.ppopt)
         loss = self.calloss(result, self.ppopt)
-        return loss[0] + sum(data['bus'][:, 2])
+        return loss[0] + sum(data['bus'][:, 2])  #  其实就是获得实部的线路损失和所有节点的有功功率之和
     # 计算全局的回报，其中bus_list表示每个EV连接的bus序号，clients_power_list表示所有agent一轮的所有action，time_list表示所有agent一轮采取动作的时间点集合
     def calculateReward(self, bus_list, clients_power_list, clients_time_list, kw=20):
         time_power_reward = [None] * 24
@@ -190,7 +190,7 @@ class globalenv:
                 client_power_list = clients_power_list[client_id]
                 for i in range(len(client_power_list)):
                     time = client_time_list[i]
-                    if time % 24 == h:  # 如果已经过了24小时，计算一次OPF
+                    if time % 24 == h:  # 这个表示已经过了24点，到了第二天
                         judge = True
                         case_copy['bus'][bus_list[client_id]-1][2] += client_power_list[i]  # 让EV所连的对应的bus的有功功率加减EV的功率
             diff = 0.0
@@ -215,8 +215,8 @@ class globalenv:
         return substationP_list
 
 
-
-
+g = globalenv(5)
+print(g.substationP(g.case))
 
 
 
