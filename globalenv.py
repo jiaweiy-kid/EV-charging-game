@@ -17,6 +17,10 @@ import numpy as np
 from case15da import case15da
 import copy
 
+alpha = 1.0
+beta = 10.0
+
+
 class suppress_stdout_stderr(object):
     '''
     A context manager for doing a "deep suppression" of stdout and stderr in
@@ -47,15 +51,42 @@ class suppress_stdout_stderr(object):
         os.close(self.null_fds[1])
 
 #  电网环境
-class globalenv:
+class globalenv:  # 需要写一个step函数
     ppopt = ppoption(PF_ALG=1, OUT_GEN=1)  # 设置一些求解的方法和输出，PF_alg表示使用牛顿法求解，OUT_GEN=1表示输出发电机的结果
-    def __init__(self, client_num):
+    def __init__(self, leader, followers_action_list=[0.0], followers_location_list=[0], price_list=[1.0]*15):  # clients_bus 是一个长度为followers数量的list，其中的每一个元素是一个节点的编号，表示这个follower位于这个节点上。可以随时间变化
+        # price_list是一个长度为节点个数的list，里面的每一个元素表示对应位置的节点当前时刻的电价，最开始初始化的时候认为所有的节点的电价都为1.0
         self.case = case15da()   # 加载case15这个例子
-        self.client_num = client_num  # 电网中车的个数
-        self.client_action = []  # 所有的车的action list
-        for i in range(self.client_num):
-            self.client_action.append([0, 0])
+        self.client_num = len(followers_location_list)  # 电网中车的个数
+        self.client_action = followers_action_list # 所有的车的action list，初始的时候都为0.0
+        self.price_list = price_list
         self.sumP = self.substationP(self.case)  # 计算初始的发电机功率
+        self.state = self.case['bus'][:, 2]
+        self.leader = leader
+
+    def reset(self, price_list=[1.0]*15):
+        self.case = case15da()
+        self.state = self.case['bus'][:, 2]
+        self.price_list = price_list
+        self.client_action = [0.0] * self.client_num
+
+    def step(self, followers_action_list, followers_location_list):  #  第一个参数是所有的followers在当前时间步的action，第二个参数是其所在的节点的编号
+        self.client_action = followers_action_list
+        case_copy = copy.deepcopy(self.case)
+        sale_reward = 0.0
+        for num in range(len(followers_action_list)):
+            # 让EV所连的对应的bus的有功功率加减EV的功率
+            case_copy['bus'][followers_location_list[num]][2] += followers_action_list[num]
+            self.state = case_copy['bus'][:, 2]
+            sale_reward += self.price_list[followers_location_list[num]] * followers_action_list[num]  #  售卖电力所获得的奖励
+        latestP = self.substationP(case_copy)  #  计算此时的发电机有功功率和损耗
+        power_reward = np.array([-abs(latestP)*2], dtype='f8')  #  OPF的奖励值
+        reward = alpha * sale_reward + beta * power_reward
+        return self.state, alpha * sale_reward, beta * power_reward, reward
+
+    def get_price(self):
+        self.price_list = self.leader.select_action(self.state).tolist()
+        return self.price_list
+
     # 计算线路损失，返回实部的损失和虚部的损失，因为是AC
     def calloss(self, baseMVA, bus=None, gen=None, branch=None, f=None, success=None, t=None, fd=None, ppopt=None):
         if isinstance(baseMVA, dict):
@@ -173,35 +204,15 @@ class globalenv:
         tchg[out] = zeros(nout)
         # print(sum(real(loss)), sum(imag(loss)))
         return sum(real(loss)), sum(imag(loss))
+
+
     # 计算substation的有功功率
     def substationP(self, data):
         # with suppress_stdout_stderr():
         result = runopf(data, self.ppopt)
         loss = self.calloss(result, self.ppopt)
         return loss[0] + sum(data['bus'][:, 2])  #  其实就是获得实部的线路损失和所有节点的有功功率之和
-    # 计算全局的回报，其中bus_list表示每个EV连接的bus序号，clients_power_list表示所有agent一轮的所有action，time_list表示所有agent一轮采取动作的时间点集合
-    def calculateReward(self, bus_list, clients_power_list, clients_time_list, kw=20):
-        time_power_reward = [None] * 24
-        for h in range(24):
-            case_copy = copy.deepcopy(self.case)
-            judge = False
-            for client_id in range(len(bus_list)):
-                client_time_list = clients_time_list[client_id]
-                client_power_list = clients_power_list[client_id]
-                for i in range(len(client_power_list)):
-                    time = client_time_list[i]
-                    if time % 24 == h:  # 这个表示已经过了24点，到了第二天
-                        judge = True
-                        case_copy['bus'][bus_list[client_id]-1][2] += client_power_list[i]  # 让EV所连的对应的bus的有功功率加减EV的功率
-            diff = 0.0
-            latestP = 0.0
-            if judge:
-                latestP = self.substationP(case_copy)
-                # 标准差
-                # diff = abs(self.sumP - latestP) * 10.0 * kw
-            # time_power_reward[h] = np.array([-diff], dtype='f8')
-            time_power_reward[h] = np.array([-abs(latestP)*2], dtype='f8')
-        return time_power_reward
+
 
     def getSubstationPList(self, bus_list, EVs_power_list):
         substationP_list = []
@@ -215,8 +226,7 @@ class globalenv:
         return substationP_list
 
 
-g = globalenv(5)
-print(g.substationP(g.case))
+
 
 
 

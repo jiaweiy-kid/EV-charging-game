@@ -10,26 +10,16 @@ socd = SampleFromNormalDistribution(0.9, 0.1, 1, 0.85, 0.95)
 sock = SampleFromNormalDistribution(9, 1, 1, 6, 12)
 
 class Env:
-    def __init__(self, data_path, d1_distribution, anxious_duration, EV_case, anx="low"):
-        super(Env, self).__init__()
-        self.origin_data = pd.read_excel(data_path, engine='openpyxl').to_numpy()  # 从excle文件中读取数据
-        self.data = MaxMinNormalization(self.origin_data, 1)  # 进行maxmin归一化
-        # data = GaussianNomalization(origin_data, 1)
-        # data = DecimalNormalization(origin_data, 1)
-        self.state_dim = 5
-        self.start_point = 47  # 因为是使用前48个小时的电价，所以从第47个点开始
-        self.t_index = random.randint(self.start_point, len(self.data) - 100)  # 随机返回一个47到数据末尾-100的值
-
-        self.state_list = []
-        self.state = np.zeros(shape=53, dtype='f8')  # 状态空间是48个电价加上6个其他值，所以是53
+    def __init__(self, EV_case, anx="low", t=1, price=1.0):
+        self.state = np.zeros(shape=6, dtype='f8')  # 状态空间
         self.done = False
         self.EV_case = EV_case
-        self.t_a = int(self.data[self.t_index][0])  # 到达时间
+        self.price = price
+        self.t_a = t  # 初始的到达时间，默认为1点，因为我们考虑一天的结束是24点
         self.t = self.t_a
         self.soc = float(np.random.uniform(0, 0.95))  # 随机初始化一个soc
-        place, mu, sigma = self.placeSelection(self.t_a)  # 返回位置，以及位置对应的离开概率的均值和方差
+        place, mu, sigma = self.placeSelection(self.t_a)  # 返回初始位置，以及位置对应的离开概率的均值和方差
         self.place_info = [place, mu, sigma]
-        self.flag = 0
         self.t_d, self.soc_d = self.depatureSim()
         self.anx = anx
         # self.k2 = SampleFromNormalDistribution(9, 1, 1, 6, 12)  # k2服从N(9，1)，并且在6-12之间
@@ -38,42 +28,33 @@ class Env:
         self.soc_x = self.anxiousGenerate()
         self.state = self.getState()
 
-    def reset(self, t_tongb):
-        self.start_point = 47
-        self.t_index = t_tongb
-        self.state_list = []
-        for i in range(self.t_index - self.start_point, self.t_index + 1):
-            self.state_list.append(self.data[i][1])
-
-        self.state = np.zeros(shape=53, dtype='f8')
-
+    def reset(self, global_t=1, price=1.0):  # 之前的只会有一个动作，现在我们考虑可能会有几个动作，所以每次global_t大于自己的t_d的时候就需要reset一下
+        self.price = price
+        self.state = np.zeros(shape=6, dtype='f8')
         self.done = False
-
-        self.t_a = int(self.data[self.t_index][0])  # 是一个0-24之前的时间值
+        self.t_a = global_t  # 是一个0-24之前的时间值
         self.t = self.t_a
         # self.soc = float(np.random.uniform(0, 0.95))
         self.soc = 0.2
-        if self.flag == 0:
-            place, mu, sigma = self.placeSelection(self.t_a)
-            self.place_info = [place, mu, sigma]
-            self.t_d, self.soc_d = self.depatureSim()
-            self.t_d = 18
-            self.soc_d = socd
-            # self.k2 = SampleFromNormalDistribution(9, 1, 1, 6, 12)
-            self.k2 = sock
-            self.t_x = self.anxiousTime()
-            self.soc_x = self.anxiousGenerate()
-            self.state = self.getState()
-        self.flag = 1
+        place, mu, sigma = self.placeSelection(self.t_a)
+        self.place_info = [place, mu, sigma]
+        self.t_d, self.soc_d = self.depatureSim()
+        # self.t_d = 18
+        self.soc_d = socd
+        # self.k2 = SampleFromNormalDistribution(9, 1, 1, 6, 12)
+        self.k2 = sock
+        self.t_x = self.anxiousTime()
+        self.soc_x = self.anxiousGenerate()
+        self.state = self.getState()
 
         return self.state
+
 
     def step(self, action):
         socn, action = self.getSoc(action, mu=0.98)
         self.soc = socn
         reward_tuple = self.calculateReward(action, anx=self.anx)
-        self.t_index += 1
-        self.t = int(self.data[self.t_index][0])
+        self.t += 1
         self.soc_x = self.anxiousGenerate()
         self.state = self.getState()
         if self.t == self.t_d:
@@ -169,24 +150,14 @@ class Env:
         return float(soc), action_actual
 
     def getState(self):
-        self.state_list = []
-        p_mean = 0.0
-        for i in range(self.t_index - self.start_point, self.t_index + 1):
-            # state_lst.append(0.1)
-            # p_mean = p_mean + self.data[i][1]
-            self.state_list.append(self.data[i][1])
-        # p_mean = p_mean / 48
-        # self.state_list.append(p_mean)
-        info = [self.t_x / 24.0, self.t_d / 24.0, self.soc, self.soc_x, self.soc_d]
-        for i in info:
-            self.state_list.append(i)
-        return np.array(self.state_list, dtype='f8')
+        info = [self.price, self.t_x / 24.0, self.t_d / 24.0, self.soc, self.soc_x, self.soc_d]
+        return np.array(info, dtype='f8')
 
     def calculateReward(self, action, kp=1.5, kx=1.7, kd=3.5, anx="low"):
         if anx == "high":
             kx = kx * 10
             kd = kd * 10
-        price = self.origin_data[self.t_index][1]
+        price = self.price
         t_now = 24 if self.t % 24 == 0 else self.t % 24
         t_anx = 24 if self.t_x % 24 == 0 else self.t_x % 24
         t_dep = 24 if self.t_d % 24 == 0 else self.t_d % 24
@@ -218,149 +189,149 @@ class Env:
             r += temp_anx
         return r, r_anx, r_price
 
-    def simulation(self, agent, ev_id, t_tongb):  # , td_sim, ta_sim, tx_sim,
-        self.reset(t_tongb)
-        priceSim = pd.read_excel('..\\price\\testPrice.xlsx', engine='openpyxl', header=None)
-        priceSim = priceSim.to_numpy()
-        price = priceSim[48:215, 1]
-        # priceSim = priceSim.to_numpy()
-        # priceSim = GaussianNomalization(priceSim, 1)
-        priceSim = MaxMinNormalization(priceSim, 1)
-        # priceSim = DecimalNormalization(priceSim, 1)
-        self.data = priceSim
-        time = [i for i in range(1, 168)]
-        td_sim = [9, 17, 32, 42, 57, 64, 79, 89, 105, 115, 131, 136, 154, 162, 167]  # depature time
-        ta_sim = [1, 11, 19, 34, 43, 58, 66, 81, 91, 106, 116, 132, 137, 156, 163]  # start charging time
-        tx_sim = [7, 14, 30, 38, 54, 62, 76, 88, 101, 112, 128, 133, 150, 160, 165]  # anxious time
-        socd_sim = []
-        k2_sim = []
-        charge_interval = []
-
-        for i in range(len(ta_sim)):
-            k1 = SampleFromNormalDistribution(0.9, 0.1, 1, 0.85, 0.95)
-            k2 = SampleFromNormalDistribution(9, 1, 1, 6, 12)
-            socd_sim.append(k1)
-            k2_sim.append(k2)
-            interval = tx_sim[i] - ta_sim[i]
-            t_charge = td_sim[i] - ta_sim[i]
-            charge_interval.append(t_charge)
-
-        soc_sim = [0.5]  # initial soc
-        index = 47 + ta_sim[0]
-        action_lst = []
-        iter_times = 0
-        self.soc = soc_sim[0]
-
-        while iter_times < 15:
-            self.t_index = index
-            self.t_a = 24 if ta_sim[iter_times] % 24 == 0 else ta_sim[iter_times] % 24
-            self.t_d = 24 if td_sim[iter_times] % 24 == 0 else td_sim[iter_times] % 24
-            self.t_x = 24 if tx_sim[iter_times] % 24 == 0 else tx_sim[iter_times] % 24
-            self.t = self.t_a
-            self.soc_d = socd_sim[iter_times]
-            self.k2 = k2_sim[iter_times]
-            self.soc_x = self.anxiousGenerate()
-            self.state = self.getState()
-            for i in range(charge_interval[iter_times]):
-                action = agent.select_action(self.state)
-                next_state, _, action, _ = self.step(action, anx)
-                action = action.item()
-                action_lst.append(action)
-                soc_sim.append(self.soc)
-                self.state = next_state
-                index += 1
-            for k in range(len(td_sim)):
-                if len(soc_sim) == td_sim[k]:
-                    departFlag = 1
-                    time_index = k
-            if (departFlag == 1) & (time_index != 14):
-                for j in range(td_sim[time_index], ta_sim[time_index + 1]):
-                    action = -0.05
-                    action_lst.append(action)
-                    self.soc += action
-                    soc_sim.append(self.soc)
-                    index += 1
-            if time_index == 14:
-                break
-            iter_times += 1
-
-        max_value = np.max(price) + 20
-        min_value = np.min(price) - 20
-        price_norm = []
-        for i in price:
-            # price_norm.append((i - min_value) / (max_value - min_value))
-            price_norm.append(i)
-
-        fig, ax1 = plt.subplots(figsize=(10, 5))
-        for i in range(len(ta_sim)):
-            t_home = []
-            t_office = []
-            t_public = []
-            t_driving = []
-            rate = []
-            if i < 14:
-                for j in range(td_sim[i], ta_sim[i + 1] + 1):
-                    t_driving.append(j)
-            if i % 2 == 0:
-                for j in range(ta_sim[i], td_sim[i] + 1):
-                    if j != td_sim[len(td_sim) - 1]:
-                        t_home.append(j)
-            if (i % 2 == 1) & (i != 11) & (i != 13):
-                for j in range(ta_sim[i], td_sim[i] + 1):
-                    t_office.append(j)
-            if (i == 11) | (i == 13):
-                for j in range(ta_sim[i], td_sim[i] + 1):
-                    t_public.append(j)
-
-            # the y-axis of histogram
-            if len(t_home) != 0:
-                for j in t_home: rate.append(action_lst[j - 1])
-                if i == 0:
-                    ax1.bar(np.array(t_home), np.array(rate), color='lightskyblue', label='home')
-                else:
-                    ax1.bar(np.array(t_home), np.array(rate), color='lightskyblue')
-            rate.clear()
-            if len(t_driving) != 0:
-                for j in t_driving: rate.append(action_lst[j - 1])
-                if i == 0:
-                    ax1.bar(np.array(t_driving), np.array(rate), color='tab:gray', label='driving')
-                else:
-                    ax1.bar(np.array(t_driving), np.array(rate), color='tab:gray')
-            rate.clear()
-
-            if len(t_public) != 0:
-                for j in t_public: rate.append(action_lst[j - 1])
-                if i == 11:
-                    ax1.bar(np.array(t_public), np.array(rate), color='darksalmon', label='public')
-                else:
-                    ax1.bar(np.array(t_public), np.array(rate), color='darksalmon')
-            rate.clear()
-            if len(t_office) != 0:
-                for j in t_office: rate.append(action_lst[j - 1])
-                if i == 1:
-                    ax1.bar(np.array(t_office), np.array(rate), color='goldenrod', label='office')
-                else:
-                    ax1.bar(np.array(t_office), np.array(rate), color='goldenrod')
-            rate.clear()
-
-        ax1.legend(loc=0)
-        ax1.set(xlabel='Time(h)', ylabel='charging power')
-        ax1.tick_params(labelsize=20)
-        plt.rcParams.update({'font.size': 20})
-        ax2 = ax1.twinx()
-        ax2.plot(range(len(soc_sim)), np.array(price_norm), 'r', label='price')
-        ax2.legend(loc='upper right')
-        ax2.set(ylabel='Price')
-        ax2.tick_params(labelsize=20)
-        fig.savefig('../run/pic/{}_pic1.pdf'.format(ev_id))
-
-        fig, sim = plt.subplots(figsize=(10, 5))
-        sim.plot(range(len(soc_sim)), np.array(soc_sim), 'b', label='SoC')
-        sim.set(ylabel='SoC')
-        sim.legend(loc='upper left')
-        axsim = sim.twinx()
-        axsim.plot(range(len(soc_sim)), np.array(price_norm), 'r', label='price')
-        axsim.legend(loc='upper right')
-        axsim.set(xlabel='time', ylabel='Price')
-        fig.savefig('../run/pic/pic2.pdf'.format(ev_id))
-        plt.show()
+    # def simulation(self, agent, ev_id, t_tongb):  # , td_sim, ta_sim, tx_sim,
+    #     self.reset(t_tongb)
+    #     priceSim = pd.read_excel('..\\price\\testPrice.xlsx', engine='openpyxl', header=None)
+    #     priceSim = priceSim.to_numpy()
+    #     price = priceSim[48:215, 1]
+    #     # priceSim = priceSim.to_numpy()
+    #     # priceSim = GaussianNomalization(priceSim, 1)
+    #     # priceSim = MaxMinNormalization(priceSim, 1)
+    #     # priceSim = DecimalNormalization(priceSim, 1)
+    #     self.data = priceSim
+    #     time = [i for i in range(1, 168)]
+    #     td_sim = [9, 17, 32, 42, 57, 64, 79, 89, 105, 115, 131, 136, 154, 162, 167]  # depature time
+    #     ta_sim = [1, 11, 19, 34, 43, 58, 66, 81, 91, 106, 116, 132, 137, 156, 163]  # start charging time
+    #     tx_sim = [7, 14, 30, 38, 54, 62, 76, 88, 101, 112, 128, 133, 150, 160, 165]  # anxious time
+    #     socd_sim = []
+    #     k2_sim = []
+    #     charge_interval = []
+    #
+    #     for i in range(len(ta_sim)):
+    #         k1 = SampleFromNormalDistribution(0.9, 0.1, 1, 0.85, 0.95)
+    #         k2 = SampleFromNormalDistribution(9, 1, 1, 6, 12)
+    #         socd_sim.append(k1)
+    #         k2_sim.append(k2)
+    #         interval = tx_sim[i] - ta_sim[i]
+    #         t_charge = td_sim[i] - ta_sim[i]
+    #         charge_interval.append(t_charge)
+    #
+    #     soc_sim = [0.5]  # initial soc
+    #     index = 47 + ta_sim[0]
+    #     action_lst = []
+    #     iter_times = 0
+    #     self.soc = soc_sim[0]
+    #
+    #     while iter_times < 15:
+    #         self.t_index = index
+    #         self.t_a = 24 if ta_sim[iter_times] % 24 == 0 else ta_sim[iter_times] % 24
+    #         self.t_d = 24 if td_sim[iter_times] % 24 == 0 else td_sim[iter_times] % 24
+    #         self.t_x = 24 if tx_sim[iter_times] % 24 == 0 else tx_sim[iter_times] % 24
+    #         self.t = self.t_a
+    #         self.soc_d = socd_sim[iter_times]
+    #         self.k2 = k2_sim[iter_times]
+    #         self.soc_x = self.anxiousGenerate()
+    #         self.state = self.getState()
+    #         for i in range(charge_interval[iter_times]):
+    #             action = agent.select_action(self.state)
+    #             next_state, _, action, _ = self.step(action, anx)
+    #             action = action.item()
+    #             action_lst.append(action)
+    #             soc_sim.append(self.soc)
+    #             self.state = next_state
+    #             index += 1
+    #         for k in range(len(td_sim)):
+    #             if len(soc_sim) == td_sim[k]:
+    #                 departFlag = 1
+    #                 time_index = k
+    #         if (departFlag == 1) & (time_index != 14):
+    #             for j in range(td_sim[time_index], ta_sim[time_index + 1]):
+    #                 action = -0.05
+    #                 action_lst.append(action)
+    #                 self.soc += action
+    #                 soc_sim.append(self.soc)
+    #                 index += 1
+    #         if time_index == 14:
+    #             break
+    #         iter_times += 1
+    #
+    #     max_value = np.max(price) + 20
+    #     min_value = np.min(price) - 20
+    #     price_norm = []
+    #     for i in price:
+    #         # price_norm.append((i - min_value) / (max_value - min_value))
+    #         price_norm.append(i)
+    #
+    #     fig, ax1 = plt.subplots(figsize=(10, 5))
+    #     for i in range(len(ta_sim)):
+    #         t_home = []
+    #         t_office = []
+    #         t_public = []
+    #         t_driving = []
+    #         rate = []
+    #         if i < 14:
+    #             for j in range(td_sim[i], ta_sim[i + 1] + 1):
+    #                 t_driving.append(j)
+    #         if i % 2 == 0:
+    #             for j in range(ta_sim[i], td_sim[i] + 1):
+    #                 if j != td_sim[len(td_sim) - 1]:
+    #                     t_home.append(j)
+    #         if (i % 2 == 1) & (i != 11) & (i != 13):
+    #             for j in range(ta_sim[i], td_sim[i] + 1):
+    #                 t_office.append(j)
+    #         if (i == 11) | (i == 13):
+    #             for j in range(ta_sim[i], td_sim[i] + 1):
+    #                 t_public.append(j)
+    #
+    #         # the y-axis of histogram
+    #         if len(t_home) != 0:
+    #             for j in t_home: rate.append(action_lst[j - 1])
+    #             if i == 0:
+    #                 ax1.bar(np.array(t_home), np.array(rate), color='lightskyblue', label='home')
+    #             else:
+    #                 ax1.bar(np.array(t_home), np.array(rate), color='lightskyblue')
+    #         rate.clear()
+    #         if len(t_driving) != 0:
+    #             for j in t_driving: rate.append(action_lst[j - 1])
+    #             if i == 0:
+    #                 ax1.bar(np.array(t_driving), np.array(rate), color='tab:gray', label='driving')
+    #             else:
+    #                 ax1.bar(np.array(t_driving), np.array(rate), color='tab:gray')
+    #         rate.clear()
+    #
+    #         if len(t_public) != 0:
+    #             for j in t_public: rate.append(action_lst[j - 1])
+    #             if i == 11:
+    #                 ax1.bar(np.array(t_public), np.array(rate), color='darksalmon', label='public')
+    #             else:
+    #                 ax1.bar(np.array(t_public), np.array(rate), color='darksalmon')
+    #         rate.clear()
+    #         if len(t_office) != 0:
+    #             for j in t_office: rate.append(action_lst[j - 1])
+    #             if i == 1:
+    #                 ax1.bar(np.array(t_office), np.array(rate), color='goldenrod', label='office')
+    #             else:
+    #                 ax1.bar(np.array(t_office), np.array(rate), color='goldenrod')
+    #         rate.clear()
+    #
+    #     ax1.legend(loc=0)
+    #     ax1.set(xlabel='Time(h)', ylabel='charging power')
+    #     ax1.tick_params(labelsize=20)
+    #     plt.rcParams.update({'font.size': 20})
+    #     ax2 = ax1.twinx()
+    #     ax2.plot(range(len(soc_sim)), np.array(price_norm), 'r', label='price')
+    #     ax2.legend(loc='upper right')
+    #     ax2.set(ylabel='Price')
+    #     ax2.tick_params(labelsize=20)
+    #     fig.savefig('../run/pic/{}_pic1.pdf'.format(ev_id))
+    #
+    #     fig, sim = plt.subplots(figsize=(10, 5))
+    #     sim.plot(range(len(soc_sim)), np.array(soc_sim), 'b', label='SoC')
+    #     sim.set(ylabel='SoC')
+    #     sim.legend(loc='upper left')
+    #     axsim = sim.twinx()
+    #     axsim.plot(range(len(soc_sim)), np.array(price_norm), 'r', label='price')
+    #     axsim.legend(loc='upper right')
+    #     axsim.set(xlabel='time', ylabel='Price')
+    #     fig.savefig('../run/pic/pic2.pdf'.format(ev_id))
+    #     plt.show()

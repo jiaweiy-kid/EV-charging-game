@@ -147,13 +147,13 @@ class QNetwork(nn.Module):
         self.linear_weight = torch.tensor([1.])
 
         # Q1 architecture
-        self.linear1 = nn.Linear(num_inputs + 5 * (num_agent - 1) + num_actions + num_agent, hidden_dim)
+        self.linear1 = nn.Linear(num_inputs + num_actions, hidden_dim)
         self.linear2 = nn.Linear(hidden_dim, hidden_dim)
         self.linear3 = nn.Linear(hidden_dim, hidden_dim)
         self.linear4 = nn.Linear(hidden_dim, 1)
 
         # Q2 architecture
-        self.linear5 = nn.Linear(num_inputs + 5 * (num_agent - 1) + num_actions + num_agent, hidden_dim)
+        self.linear5 = nn.Linear(num_inputs + num_actions, hidden_dim)
         self.linear6 = nn.Linear(hidden_dim, hidden_dim)
         self.linear7 = nn.Linear(hidden_dim, hidden_dim)
         self.linear8 = nn.Linear(hidden_dim, 1)
@@ -162,9 +162,9 @@ class QNetwork(nn.Module):
         # self.apply(policy_weights_init_)
 
     # make forward propagation to 2 critic networks
-    def forward(self, state, action, other_action):
+    def forward(self, state, action):
         # xu is a one dimensional vector including state and action
-        xu = torch.cat([state, action, other_action], 1)
+        xu = torch.cat([state, action], 1)
         x1 = F.relu(self.linear1(xu))
         x1 = F.relu(self.linear2(x1))
         x1 = F.relu(self.linear3(x1))
@@ -274,20 +274,3 @@ class DeterministicPolicy(nn.Module):
         return super(DeterministicPolicy, self).to(device)
 
 
-class Global_net(nn.Module):
-    def __init__(self, num_inputs, action_space=1):
-        super(Global_net, self).__init__()
-        self.linear1 = nn.Linear(num_inputs, 16)
-        self.linear2 = nn.Linear(16, 32)
-        self.linear3 = nn.Linear(32, 16)
-        self.linear4 = nn.Linear(16, action_space)
-
-    def forward(self, action_batch):
-        x = F.relu(self.linear1(action_batch))
-        x = F.relu(self.linear2(x))
-        x = F.relu(self.linear3(x))
-        x = self.linear4(x)
-        max_x = float(torch.max(x).item())
-        min_x = float(torch.min(x).item())
-        x = (x - min_x) / (max_x - min_x)
-        return x

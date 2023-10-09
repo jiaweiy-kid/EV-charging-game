@@ -63,9 +63,8 @@ parser.add_argument('--algorithm', type=str, default="SAC", metavar='N',
 args = parser.parse_args()
 
 
-class Agent:
-    def __init__(self, ev_id, global_env, writer, bus=1, d1_distribution=None,
-                 anxious_duration=None, EV_case=None, anx="low"):
+class Follower:
+    def __init__(self, ev_id, global_env, writer, bus=1, d1_distribution=None, anxious_duration=None, EV_case=None, anx="low"):
         if anxious_duration is None:
             anxious_duration = [1, 4]
         if d1_distribution is None:
@@ -76,23 +75,19 @@ class Agent:
             mu_dep = [9.1, 18.4, 15.6]
             sigma_dep = [2.3, 3.1, 3.7]
             EV_case = [mu_arr, sigma_arr, mu_dep, sigma_dep]
-        self.ev_id = ev_id
-        self.anx = anx
-        # self.env = Env('..\\price\\trainPrice.xlsx', d1_distribution, anxious_duration, EV_case)
-        self.env = Env('../price/trainPrice.xlsx', d1_distribution, anxious_duration, EV_case, anx)
-        self.global_env = global_env
+        self.ev_id = ev_id  # follower的id，不会发生变化
+        self.env = Env(EV_case, anx)
+        self.grid = global_env
         self.writer = writer
-        self.bus = bus
+        self.bus = bus  # follower当前所在的节点编号
         self.d1 = d1_distribution
         self.anxious_duration = anxious_duration
         self.EV_case = EV_case
-        self.state = torch.randn(1, 53)
+        self.state = torch.randn(1, 6)  # follower的状态包括6个维度，分别是price，t_x，t_d，soc，soc_x，soc_d
         self.action = torch.tensor([0.])
-        if args.algorithm == "SAC":
-            self.agent = SAC(self.state.shape[1], self.action, args)
-        # else:
-        #     self.agent = AC(self.state.shape[1], self.action, args)
-        self.memory = ReplayMemory(args.replay_size, args.seed)
+        self.agent = SAC(self.state.shape[1], self.action, args)  # 使用SAC算法
+        self.state = self.env.state
+        self.memory = ReplayMemory(args.replay_size, args.seed)  # replay buffer
         self.episode_r = []
         self.epoch_price = []
         self.epoch_anx = []
@@ -104,82 +99,46 @@ class Agent:
         self.episode_reward = np.array([0.0], dtype='f8')
         self.anx_reward = np.array([0.0], dtype='f8')
         self.price_reward = np.array([0.0], dtype='f8')
-        self.power_reward = np.array([0.0], dtype='f8')
-        self.total_numsteps = 0
         self.episode_step = 0
         self.updates = 0
 
-    # def power_train(self, i_episode, episode_states, episode_powers, clients_episode_actions, clients_episode_states,
-    #                 id):  # i_episode表示本地的轮数，episode_states表示一个episode的所有状态四元组
-    #     # episode_powers表示一个episode的OPF的reward
-    #     for i in range(len(episode_states)):
-    #         other_action = [None] * len(clients_episode_actions)
-    #         other_action_next = [None] * len(clients_episode_actions)
-    #         other_state = [None] * len(clients_episode_actions)
-    #         other_state_next = [None] * len(clients_episode_actions)
-    #         episode_state = episode_states[i]
-    #         episode_power = episode_powers[i]
-    #         for j in range(len(clients_episode_actions)):  # 遍历所有agent的episode action
-    #             if i < len(clients_episode_actions[j]):  # 如果agent在这一步有action，则放入，否则放入0.0
-    #                 other_action[j] = clients_episode_actions[j][i]
-    #                 other_state[j] = clients_episode_states[j][i][0][-5:].tolist()
-    #                 if i + 1 < len(clients_episode_actions[j]):
-    #                     other_action_next[j] = clients_episode_actions[j][i + 1]
-    #                     other_state_next[j] = clients_episode_states[j][i][3][-5:].tolist()
-    #                 else:
-    #                     other_action_next[j] = 0.0
-    #                     other_state_next[j] = clients_episode_states[j][-1][3][-5:].tolist()
-    #
-    #             else:
-    #                 other_action[j] = 0.0
-    #                 other_action_next[j] = 0.0
-    #                 other_state[j] = clients_episode_states[j][-1][0][-5:].tolist()
-    #                 other_state_next[j] = clients_episode_states[j][-1][3][-5:].tolist()
-    #         global_state = np.append(episode_state[0][0:48], np.array(sum(other_state, [])))
-    #         global_state_next = np.append(episode_state[3][0:48], np.array(sum(other_state_next, [])))
-    #         self.memory.push(global_state, episode_state[1] / 0.2, episode_state[2],
-    #                          global_state_next, episode_state[4], other_action, other_action_next)
-    #         self.episode_reward += episode_state[2]
-    #         self.power_reward += episode_power
-    #
-    #     print(self.ev_id, " episode_reward:", self.episode_reward, "price reward:", self.price_reward, "anx_reward:",
-    #           self.anx_reward, "power_reward:", self.power_reward)
-    #
-    #     self.writer.add_scalar(self.ev_id + '/reward/episode_reward', self.episode_reward, i_episode)
-    #     self.writer.add_scalar(self.ev_id + '/reward/price_reward', self.price_reward, i_episode)
-    #     self.writer.add_scalar(self.ev_id + '/reward/anx_reward', self.anx_reward, i_episode)
-    #     self.writer.add_scalar(self.ev_id + '/reward/opf_reward', self.power_reward, i_episode)
-    #
-    #     self.episode_r.append(self.episode_reward.copy())
-    #     self.epoch_price.append(self.price_reward.copy())
-    #     self.epoch_anx.append(self.anx_reward.copy())
-    #     self.epoch_power.append(self.power_reward.copy())
-    #
-    #     self.episode_reward = np.array([0.0], dtype='f8')
-    #     self.anx_reward = np.array([0.0], dtype='f8')
-    #     self.price_reward = np.array([0.0], dtype='f8')
-    #     self.power_reward = np.array([0.0], dtype='f8')
-    #     if len(self.memory) > args.batch_size:
-    #         # for i in range(10):  # each training tep
-    #         if args.algorithm == "SAC":
-    #             critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha \
-    #                 = self.agent.update_parameters(self.memory, args.batch_size, self.updates, id)
-    #             self.cr1_lst.append(critic_1_loss)
-    #             self.cr2_lst.append(critic_2_loss)
-    #             # self.policy_lst.append(policy_loss.item())
-    #             self.alpha_lst.append(alpha)
-    #             # global_q.writer.add_scalar("global_critic" + '/loss/critic_1', critic_1_loss, global_q.updates)
-    #             # global_q.writer.add_scalar("global_critic" + '/loss/critic_2', critic_2_loss, global_q.updates)
-    #             self.writer.add_scalar(self.ev_id + '/loss/critic_1', critic_1_loss, self.updates)
-    #             self.writer.add_scalar(self.ev_id + '/loss/critic_2', critic_1_loss, self.updates)
-    #             self.writer.add_scalar(self.ev_id + '/loss/policy', policy_loss, self.updates)
-    #             self.writer.add_scalar(self.ev_id + '/loss/entropy_loss', ent_loss, self.updates)
-    #             self.writer.add_scalar(self.ev_id + '/entropy_temperature/alpha', alpha, self.updates)
-    #             self.updates += 1
-    #         else:
-    #             critic_loss, policy_loss = self.agent.update_parameters(self.memory, args.batch_size, self.updates, id)
-    #             self.cr1_lst.append(critic_loss)
-    #             self.writer.add_scalar(self.ev_id + '/loss/critic_1', critic_loss, self.updates)
-    #             self.writer.add_scalar(self.ev_id + '/loss/policy', policy_loss, self.updates)
-    #             self.updates += 1
+    def update_paramaters(self):
+        if len(self.memory) > args.batch_size:
+            if args.algorithm == "SAC":
+                critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha \
+                    = self.agent.update_parameters(self.memory, args.batch_size, self.updates)
+                self.cr1_lst.append(critic_1_loss)
+                self.cr2_lst.append(critic_2_loss)
+                self.alpha_lst.append(alpha)
+                self.writer.add_scalar(self.ev_id + '/loss/critic_1', critic_1_loss, self.updates)
+                self.writer.add_scalar(self.ev_id + '/loss/critic_2', critic_1_loss, self.updates)
+                self.writer.add_scalar(self.ev_id + '/loss/policy', policy_loss, self.updates)
+                self.writer.add_scalar(self.ev_id + '/loss/entropy_loss', ent_loss, self.updates)
+                self.writer.add_scalar(self.ev_id + '/entropy_temperature/alpha', alpha, self.updates)
+                self.updates += 1
+            else:
+                critic_loss, policy_loss = self.agent.update_parameters(self.memory, args.batch_size, self.updates)
+                self.cr1_lst.append(critic_loss)
+                self.writer.add_scalar(self.ev_id + '/loss/critic_1', critic_loss, self.updates)
+                self.writer.add_scalar(self.ev_id + '/loss/policy', policy_loss, self.updates)
+                self.updates += 1
 
+    def interact(self, global_t, price=1.0):  # 在global_t时刻以电价price和全局环境进行交互，返回当前时间和电价下的action
+        done = False
+        if global_t > self.env.t_d:  #  如果现在的时间还没到自己的离开时间，那么自己的环境就不需要重置时间重新算一个t_d
+            self.state = self.env.reset(global_t, price)
+        self.episode_reward = np.array([0.0], dtype='f8')  # 在这24个小时内的reward，下一个24小时要重置
+        self.anx_reward = np.array([0.0], dtype='f8')
+        self.price_reward = np.array([0.0], dtype='f8')
+
+        action = self.agent.select_action(self.state)
+        next_state, reward_tuple, action, done = self.env.step(action)
+        reward = reward_tuple[0]
+        anx = reward_tuple[1]
+        price = reward_tuple[2]
+
+        self.anx_reward += anx
+        self.price_reward += price
+        self.memory.push(self.state, action/0.2, reward, next_state, float(done))
+        self.state = next_state
+        return action, self.price_reward, self.anx_reward

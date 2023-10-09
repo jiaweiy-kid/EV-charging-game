@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.optim import Adam, SGD
 from torch.optim.lr_scheduler import MultiStepLR
 from utils import soft_update, hard_update
-from model import GaussianPolicy, QNetwork, DeterministicPolicy, Global_net
+from model import GaussianPolicy, QNetwork, DeterministicPolicy
 
 
 class SAC(object):
@@ -18,8 +18,6 @@ class SAC(object):
         self.automatic_entropy_tuning = args.automatic_entropy_tuning
         self.device = torch.device("cuda" if args.cuda else "cpu")
         self.critic = QNetwork(num_inputs, action_space.shape[0], args.hidden_size).to(device=self.device)
-        # self.g_net = Global_net(args.num_agent).to(device=self.device)
-        # self.critic = Q_net.to(device=self.device)
         self.critic_optim = Adam(self.critic.parameters(), lr=args.clr)
 
         # self.critic_optim = SGD(self.critic.parameters(), lr=args.clr, momentum=0.9)
@@ -32,10 +30,7 @@ class SAC(object):
 
         if self.policy_type == "Gaussian":
             if self.automatic_entropy_tuning is True:
-                # torch.prod:output product of all elements in the action space tensor
-                # shape return the dimension of action space
-                # Target Entropy = −dim(A)
-                # HalfCheetah是一只2D小狗，我们的action是一个长度为6的向量， Target Entropy = -6
+
                 self.target_entropy = -torch.prod(torch.Tensor(torch.tensor([]).shape).to(self.device)).item()
                 self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
                 # log_alpha is the updated parameter in SAC
@@ -65,32 +60,23 @@ class SAC(object):
             _, _, action = self.policy.sample(state)
         return action.detach().cpu().numpy()[0]
 
-    def update_parameters(self, memory, batch_size, updates, id):
+    def update_parameters(self, memory, batch_size, updates):
         # Sample a batch from memory
-        state_batch, action_batch, reward_batch, next_state_batch, mask_batch, other_action_batch, other_action_next_batch\
-            = memory.sample(batch_size=batch_size)
+        state_batch, action_batch, reward_batch, next_state_batch, mask_batch = memory.sample(batch_size=batch_size)
         state_batch = torch.FloatTensor(state_batch).to(self.device)
         next_state_batch = torch.FloatTensor(next_state_batch).to(self.device)
         action_batch = torch.FloatTensor(action_batch).to(self.device)
         reward_batch = torch.FloatTensor(reward_batch).to(self.device)
         mask_batch = torch.FloatTensor(mask_batch).to(self.device).unsqueeze(1)
-        other_action_batch = torch.FloatTensor(other_action_batch).to(self.device)
-        other_action_next_batch = torch.FloatTensor(other_action_next_batch).to(self.device)
-        print(other_action_batch.shape)
         # disabled gradient calculation, calculate the loss of q network
         with torch.no_grad():
-            next_state_action, next_state_log_pi, _ = self.policy.sample(torch.cat((next_state_batch[:, 0:48], state_batch[:, 48 + id * 5: 48 + (id + 1) * 5]), 1))
-            # qf1_next_target, qf2_next_target = self.critic_target(next_state_batch, next_state_action, torch.mean(other_action_next_batch, dim=1, keepdim=True))
-            qf1_next_target, qf2_next_target = self.critic_target(next_state_batch, next_state_action, other_action_next_batch)
+            next_state_action, next_state_log_pi, _ = self.policy.sample(next_state_batch)
+            qf1_next_target, qf2_next_target = self.critic_target(next_state_batch, next_state_action)
             min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)  # - self.alpha * next_state_log_pi
             next_q_value = reward_batch + mask_batch * self.gamma * (min_qf_next_target)
-        # qf1, qf2 = self.critic(state_batch, action_batch, torch.mean(other_action_batch, dim=1, keepdim=True))  # Two Q-functions to mitigate positive bias in the policy improvement step
-        qf1, qf2 = self.critic(state_batch, action_batch, other_action_batch)
+        qf1, qf2 = self.critic(state_batch, action_batch)
         qf1_loss = F.mse_loss(qf1, next_q_value)  # JQ = 𝔼(st,at)~D[0.5(Q1(st,at) - r(st,at) - γ(𝔼st+1~p[V(st+1)]))^2]
         qf2_loss = F.mse_loss(qf2, next_q_value)  # JQ = 𝔼(st,at)~D[0.5(Q1(st,at) - r(st,at) - γ(𝔼st+1~p[V(st+1)]))^2]
-        # g_loss = torch.mean(self.g_net(other_action_batch))
-        # qf1_loss += g_loss
-        # qf2_loss += g_loss
         qf_loss = qf1_loss + qf2_loss
 
         # update q network parameters
@@ -99,32 +85,29 @@ class SAC(object):
         self.critic_optim.step()
         # self.critic_scheduler.step()
 
-        pi, log_pi, _ = self.policy.sample(torch.cat((state_batch[:, 0:48], state_batch[:, 48 + id * 5: 48 + (id + 1) * 5]), 1))
+        pi, log_pi, _ = self.policy.sample(state_batch)
 
-        qf1_pi, qf2_pi = self.critic(state_batch, pi, other_action_batch)
-        # qf1_pi, qf2_pi = self.critic(state_batch, pi, torch.mean(other_action_batch, dim=1, keepdim=True))
-        # qf1_pi += g_loss
-        # qf2_pi += g_loss
+        qf1_pi, qf2_pi = self.critic(state_batch, pi)
         min_qf_pi = torch.min(qf1_pi, qf2_pi)
-        #  policy_loss = ((self.alpha * log_pi) - min_qf_pi).mean() # Jπ = 𝔼st∼D,εt∼N[α * logπ(f(εt;st)|st) − Q(st,f(εt;st))] SAC
-        policy_loss = -1.0 * (log_pi * min_qf_pi).mean()  # AC
+        policy_loss = ((self.alpha * log_pi) - min_qf_pi).mean() # Jπ = 𝔼st∼D,εt∼N[α * logπ(f(εt;st)|st) − Q(st,f(εt;st))] SAC
+        # policy_loss = -1.0 * (log_pi * min_qf_pi).mean()  # AC
         self.policy_optim.zero_grad()
         policy_loss.backward()
         self.policy_optim.step()
         # self.policy_scheduler.step()
         # update par alpha automatically through calculating alpha loss
-        # if self.automatic_entropy_tuning:
-        #     alpha_loss = -(self.log_alpha * (log_pi + self.target_entropy).detach()).mean()
-        #
-        #     self.alpha_optim.zero_grad()
-        #     alpha_loss.backward()
-        #     self.alpha_optim.step()
-        #
-        #     self.alpha = self.log_alpha.exp()
-        #     alpha_tlogs = self.alpha.clone() # For TensorboardX logs
-        # else:
-        alpha_loss = torch.tensor(0.).to(self.device)
-        alpha_tlogs = torch.tensor(self.alpha) # For TensorboardX logs
+        if self.automatic_entropy_tuning:
+            alpha_loss = -(self.log_alpha * (log_pi + self.target_entropy).detach()).mean()
+
+            self.alpha_optim.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optim.step()
+
+            self.alpha = self.log_alpha.exp()
+            alpha_tlogs = self.alpha.clone() # For TensorboardX logs
+        else:
+            alpha_loss = torch.tensor(0.).to(self.device)
+            alpha_tlogs = torch.tensor(self.alpha) # For TensorboardX logs
 
         if updates % self.target_update_interval == 0:
             soft_update(self.critic_target, self.critic, self.tau)
